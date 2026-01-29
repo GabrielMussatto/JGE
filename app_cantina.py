@@ -10,11 +10,9 @@ import shutil
 st.set_page_config(page_title="Sistema JGE AD14", page_icon="🤪", layout="wide")
 
 # --- CONFIGURAÇÃO INTELIGENTE DO TESSERACT ---
-# 1. Verifica se está no Linux (Nuvem do Streamlit)
 if shutil.which("tesseract"):
     pytesseract.pytesseract.tesseract_cmd = shutil.which("tesseract")
 else:
-    # 2. Se não achou, tenta o caminho do Windows (Seu PC Local)
     caminho_windows = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     try:
         pytesseract.pytesseract.tesseract_cmd = caminho_windows
@@ -35,7 +33,6 @@ def converter_mes_para_numero(texto_data):
 def extrair_dados(imagem_file, nome_produto, preco_unitario):
     try:
         imagem = Image.open(imagem_file)
-        # O idioma 'por' precisa estar instalado
         texto = pytesseract.image_to_string(imagem, lang='por')
         linhas = [l.strip() for l in texto.split('\n') if l.strip()]
         
@@ -48,18 +45,15 @@ def extrair_dados(imagem_file, nome_produto, preco_unitario):
             "Arquivo": imagem_file.name
         }
 
-        # 1. Valor
+        # Valor
         match_valor = re.search(r'R\$\s?([\d.,]+)', texto)
         if match_valor:
             valor_texto = match_valor.group(1).replace('.', '').replace(',', '.')
             valor_float = float(valor_texto)
             dados["Valor Total"] = valor_float
             
-            # --- CÁLCULO DE QUANTIDADE ---
             if preco_unitario > 0:
                 quantidade = valor_float / preco_unitario
-                
-                # Se for inteiro (ex: 2.0), salva como 2. Se for quebrado, mantém decimal
                 if quantidade.is_integer():
                     dados["Qtd"] = int(quantidade)
                 else:
@@ -67,12 +61,12 @@ def extrair_dados(imagem_file, nome_produto, preco_unitario):
             else:
                 dados["Qtd"] = 0
 
-        # 2. Data
+        # Data
         match_data = re.search(r'(\d{2})\s([A-Za-z]{3})\s(\d{4})', texto)
         if match_data:
             dados["Data"] = converter_mes_para_numero(match_data.group(0))
 
-        # 3. Cliente
+        # Cliente
         encontrou_origem = False
         for i, linha in enumerate(linhas):
             if "Origem" in linha:
@@ -88,6 +82,48 @@ def extrair_dados(imagem_file, nome_produto, preco_unitario):
         return dados
     except Exception as e:
         return {"Erro": str(e), "Arquivo": imagem_file.name}
+
+# --- FUNÇÃO GERADORA DE PDF ---
+def gerar_pdf(df, produto, total_val, total_qtd):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Cabeçalho
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 10, f"Relatorio de Vendas - {produto}", ln=True, align='C')
+    pdf.ln(10)
+    
+    # Resumo
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, f"Resumo do Dia:", ln=True)
+    pdf.set_font("Arial", size=12)
+    pdf.cell(0, 8, f"Faturamento Total: R$ {total_val:.2f}", ln=True)
+    pdf.cell(0, 8, f"Quantidade Vendida: {total_qtd} unidades", ln=True)
+    pdf.cell(0, 8, f"Total de Comprovantes: {len(df)}", ln=True)
+    pdf.ln(10)
+    
+    # Tabela
+    pdf.set_font("Arial", 'B', 10)
+    # Cabeçalho da Tabela
+    pdf.cell(40, 8, "Data", border=1)
+    pdf.cell(70, 8, "Cliente", border=1)
+    pdf.cell(20, 8, "Qtd", border=1)
+    pdf.cell(30, 8, "Valor", border=1)
+    pdf.ln()
+    
+    # Dados da Tabela
+    pdf.set_font("Arial", size=10)
+    for index, row in df.iterrows():
+        # Tratamento simples para caracteres especiais no PDF (latin-1)
+        cliente_limpo = str(row['Cliente']).encode('latin-1', 'replace').decode('latin-1')
+        
+        pdf.cell(40, 8, str(row['Data']), border=1)
+        pdf.cell(70, 8, cliente_limpo[:35], border=1) # Corta nomes muito longos
+        pdf.cell(20, 8, str(row['Qtd']), border=1)
+        pdf.cell(30, 8, f"R$ {row['Valor Total']:.2f}", border=1)
+        pdf.ln()
+        
+    return pdf.output(dest='S').encode('latin-1')
 
 # --- INTERFACE ---
 with st.sidebar:
@@ -128,24 +164,41 @@ if arquivos:
         total_reais = df["Valor Total"].sum()
         total_itens = df["Qtd"].sum()
         
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns(2)
         c1.metric("💰 Faturamento", f"R$ {total_reais:.2f}")
         c2.metric(f"📦 Total de {produto_dia}s", f"{total_itens} un")
         
         st.divider()
         
-        # Tabela Editável
         st.subheader("📋 Conferência")
         df_final = st.data_editor(df, use_container_width=True)
         
-        # Download
+        # --- ÁREA DE DOWNLOADS ---
+        col_down1, col_down2 = st.columns(2)
+        
+        # 1. Download Excel
         def to_excel(df):
             output = BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False, sheet_name='Vendas')
             return output.getvalue()
         
-        st.download_button("📥 Baixar Excel", to_excel(df_final), f"Vendas_{produto_dia}.xlsx")
+        with col_down1:
+            st.download_button("📥 Baixar Planilha (Excel)", to_excel(df_final), f"Vendas_{produto_dia}.xlsx")
+
+        # 2. Download PDF
+        with col_down2:
+            try:
+                pdf_bytes = gerar_pdf(df_final, produto_dia, total_reais, total_itens)
+                st.download_button(
+                    label="📄 Baixar Relatório (PDF)",
+                    data=pdf_bytes,
+                    file_name=f"Relatorio_{produto_dia}.pdf",
+                    mime="application/pdf"
+                )
+            except Exception as e:
+                st.error(f"Erro ao gerar PDF: {e}")
+
     else:
         st.error("Não foi possível ler os valores dos comprovantes.")
 
