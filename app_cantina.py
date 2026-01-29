@@ -5,6 +5,7 @@ import re
 import pandas as pd
 from io import BytesIO
 import shutil
+from fpdf import FPDF
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Sistema JGE AD14", page_icon="🤪", layout="wide")
